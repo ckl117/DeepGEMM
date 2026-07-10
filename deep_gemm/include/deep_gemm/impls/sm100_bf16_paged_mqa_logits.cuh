@@ -217,15 +217,6 @@ void sm100_bf16_paged_mqa_logits(const uint32_t batch_size,
             empty_kv_barriers[kv_stage_idx]->wait(kv_phase ^ 1);
 
             if (cute::elect_one_sync()) {
-                // #pragma unroll
-                // for (uint32_t i = 0; i < kNumBlocksPerSplit; ++ i) {
-                //     tma::copy<kHeadDim, BLOCK_KV, 0, __nv_fp8_e4m3, true>(&tensor_map_kv, full_kv_barriers[kv_stage_idx],
-                //                                                           smem_kv[kv_stage_idx] + (BLOCK_KV * kHeadDim) * i,
-                //                                                           0, 0, 1, kv_block_idx[i]);
-                //     tma::copy<BLOCK_KV, 1, 0>(&tensor_map_kv_scales, full_kv_barriers[kv_stage_idx],
-                //                               smem_kv_scales[kv_stage_idx] + BLOCK_KV * i,
-                //                               0, kv_block_idx[i]);
-                // }
                 // 分别处理2个UMMA_M=128
                 #pragma unroll
                 for (uint32_t mma_idx = 0; mma_idx < 2; ++ mma_idx) {
@@ -295,63 +286,18 @@ void sm100_bf16_paged_mqa_logits(const uint32_t batch_size,
             for (uint32_t i = 0; i < kNumMathWarpGroups; ++ i) {
                 empty_umma_barriers[i]->wait(umma_phase);
                 ptx::tcgen05_after_thread_sync();
-                // if (blockIdx.x == 151 && lane_idx == 0){
-                //     for(int row_id = 0; row_id < 128; ++row_id){
-                //         printf("====> kNumMathWarpGroups{%d}, kv row %d\n", i, row_id);
-                //         for(int idx = 0; idx < 128; ++idx){
-                //             if (idx==64) printf("\n");
-                //             printf("%f,",static_cast<float>(*(smem_kv[kv_stage_idx] + i * 128 * 128 + row_id * 128 + idx)));
-                            
-                //         }
-                //         printf("\n");
-                //     }
-                //     for(int row_id = 0; row_id < 64; ++row_id){
-                //         printf("====> kNumMathWarpGroups{%d}, q row %d\n", i, row_id);
-                //         for(int idx = 0; idx < 128; ++idx){
-                //             if (idx==64) printf("\n");
-                //             printf("%f,",static_cast<float>(*(smem_q[q_stage_idx] + row_id * 128 + idx)));
-                //         }
-                //         printf("\n");
-                //     }
-                // }
-
-
-                if (i == 0){
-                // #pragma unroll
-                for (uint32_t k1 = 0; k1 < kHeadDim / 64; ++ k1) {
-                    // int k1 = 0;
-                    // int k = 1;
-                // if (blockIdx.x == gridDim.x - 1 && lane_idx == 0){
-                //     auto base_kv_smem = smem_kv[kv_stage_idx] + i * 128 * 128 + k1 * UMMA_M * 64 + k * UMMA_K;
-                //     for(int row_id = 0; row_id < 128; ++row_id){
-                //         printf("====> kNumMathWarpGroups{%d}, kv row %d\n", i, row_id);
-                //         for(int idx = 0; idx < 16; ++idx){
-                //             if (idx==64) printf("\n");
-                //             printf("%f,",static_cast<float>(*(base_kv_smem + row_id * 64 + idx)));
-                            
-                //         }
-                //         printf("\n");
-                //     }
-                //     auto base_q_smem = smem_q[q_stage_idx] + k1 * UMMA_N * 64 + k * UMMA_K;
-                //     for(int row_id = 0; row_id < 64; ++row_id){
-                //         printf("====> kNumMathWarpGroups{%d}, q row %d\n", i, row_id);
-                //         for(int idx = 0; idx < 16; ++idx){
-                //             if (idx==64) printf("\n");
-                //             printf("%f,",static_cast<float>(*(base_q_smem + row_id * 64 + idx)));
-                //         }
-                //         printf("\n");
-                //     }
-                // }
-                    // #pragma unroll
-                    for (uint32_t k = 0; k < 64 / UMMA_K; ++ k) {
-                        auto a_desc = mma::sm100::make_umma_desc<cute::UMMA::Major::K, UMMA_M, 64, kHeadDim>(
-                            smem_kv[kv_stage_idx] + i * UMMA_M * kHeadDim + k1 * UMMA_M * 64 + k * UMMA_K, 0, 0);
-                        auto b_desc = mma::sm100::make_umma_desc<cute::UMMA::Major::K, UMMA_M, 64, kHeadDim>(
-                            smem_q[q_stage_idx] + k1 * UMMA_N * 64 + k * UMMA_K, 0, 0);
-                        ptx::SM100_MMA_F16BF16_SS::fma(a_desc, b_desc, i * UMMA_N, k1 > 0 or k > 0, runtime_instr_desc);
+                if (cute::elect_one_sync()) {
+                    #pragma unroll
+                    for (uint32_t k1 = 0; k1 < kHeadDim / 64; ++ k1) {
+                        #pragma unroll
+                        for (uint32_t k = 0; k < 64 / UMMA_K; ++ k) {
+                            auto a_desc = mma::sm100::make_umma_desc<cute::UMMA::Major::K, UMMA_M, 64, kHeadDim>(
+                                smem_kv[kv_stage_idx] + i * UMMA_M * kHeadDim + k1 * UMMA_M * 64 + k * UMMA_K, 0, 0);
+                            auto b_desc = mma::sm100::make_umma_desc<cute::UMMA::Major::K, UMMA_M, 64, kHeadDim>(
+                                smem_q[q_stage_idx] + k1 * UMMA_N * 64 + k * UMMA_K, 0, 0);
+                            ptx::SM100_MMA_F16BF16_SS::fma(a_desc, b_desc, i * UMMA_N, k1 > 0 or k > 0, runtime_instr_desc);
+                        }
                     }
-                }
-
                 }
                 cutlass::arch::umma_arrive(reinterpret_cast<uint64_t*>(full_umma_barriers[i]));
             }
