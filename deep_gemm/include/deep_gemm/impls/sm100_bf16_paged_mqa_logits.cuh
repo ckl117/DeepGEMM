@@ -217,26 +217,35 @@ void sm100_bf16_paged_mqa_logits(const uint32_t batch_size,
             empty_kv_barriers[kv_stage_idx]->wait(kv_phase ^ 1);
 
             if (cute::elect_one_sync()) {
+                // #pragma unroll
+                // for (uint32_t i = 0; i < kNumBlocksPerSplit; ++ i) {
+                //     tma::copy<kHeadDim, BLOCK_KV, 0, __nv_fp8_e4m3, true>(&tensor_map_kv, full_kv_barriers[kv_stage_idx],
+                //                                                           smem_kv[kv_stage_idx] + (BLOCK_KV * kHeadDim) * i,
+                //                                                           0, 0, 1, kv_block_idx[i]);
+                //     tma::copy<BLOCK_KV, 1, 0>(&tensor_map_kv_scales, full_kv_barriers[kv_stage_idx],
+                //                               smem_kv_scales[kv_stage_idx] + BLOCK_KV * i,
+                //                               0, kv_block_idx[i]);
+                // }
                 // 分别处理2个UMMA_M=128
                 #pragma unroll
-                for (uint32_t i = 0; i < 2; ++ i) {
+                for (uint32_t mma_idx = 0; mma_idx < 2; ++ mma_idx) {
                     // BF16 精度下，head_dim=128，每个行有两个Swizzle Atom，需要分开load
-                    auto current_smem_ptr = smem_kv[kv_stage_idx] + (128 * kHeadDim) * i;
+                    auto current_smem_ptr = smem_kv[kv_stage_idx] + (UMMA_M * kHeadDim) * mma_idx;
                     // 先TMA load 每个block的 第一个Swizzle Atom
                     #pragma unroll
-                    for (uint32_t j = 0; j < 2; ++ j) {
+                    for (uint32_t idx_in_block_pair = 0; idx_in_block_pair < 2; ++ idx_in_block_pair) {
                         cute::SM90_TMA_LOAD_3D::copy(&tensor_map_kv, reinterpret_cast<uint64_t*>(full_kv_barriers[kv_stage_idx]),
                                                     static_cast<uint64_t>(cute::TMA::CacheHintSm100::EVICT_NORMAL),
-                                                    current_smem_ptr + j * 64 * 64,
-                                                    0, 0, kv_block_idx[i*2+j]);
+                                                    current_smem_ptr + idx_in_block_pair * BLOCK_KV * 64,
+                                                    0, 0, kv_block_idx[mma_idx*2+idx_in_block_pair]);
                     }
                     // 然后TMA load 每个block的 第二个Swizzle Atom
                     #pragma unroll
-                    for (uint32_t k = 0; k < 2; ++ k) {
+                    for (uint32_t idx_in_block_pair = 0; idx_in_block_pair < 2; ++ idx_in_block_pair) {
                         cute::SM90_TMA_LOAD_3D::copy(&tensor_map_kv, reinterpret_cast<uint64_t*>(full_kv_barriers[kv_stage_idx]),
                                                     static_cast<uint64_t>(cute::TMA::CacheHintSm100::EVICT_NORMAL),
-                                                    current_smem_ptr + 128 * 64 + k * 64 * 64,
-                                                    64, 0, kv_block_idx[i*2+k]);
+                                                    current_smem_ptr + UMMA_M * 64 + idx_in_block_pair * BLOCK_KV * 64,
+                                                    64, 0, kv_block_idx[mma_idx*2+idx_in_block_pair]);
                     }
                 }
                 full_kv_barriers[kv_stage_idx]->arrive_and_expect_tx(SMEM_KV_SIZE_PER_STAGE);
@@ -286,7 +295,7 @@ void sm100_bf16_paged_mqa_logits(const uint32_t batch_size,
             for (uint32_t i = 0; i < kNumMathWarpGroups; ++ i) {
                 empty_umma_barriers[i]->wait(umma_phase);
                 ptx::tcgen05_after_thread_sync();
-                // if (blockIdx.x == 147 && lane_idx == 0){
+                // if (blockIdx.x == 151 && lane_idx == 0){
                 //     for(int row_id = 0; row_id < 128; ++row_id){
                 //         printf("====> kNumMathWarpGroups{%d}, kv row %d\n", i, row_id);
                 //         for(int idx = 0; idx < 128; ++idx){
@@ -306,16 +315,43 @@ void sm100_bf16_paged_mqa_logits(const uint32_t batch_size,
                 //     }
                 // }
 
-                #pragma unroll
+
+                if (i == 0){
+                // #pragma unroll
                 for (uint32_t k1 = 0; k1 < kHeadDim / 64; ++ k1) {
-                    #pragma unroll
+                    // int k1 = 0;
+                    // int k = 1;
+                // if (blockIdx.x == gridDim.x - 1 && lane_idx == 0){
+                //     auto base_kv_smem = smem_kv[kv_stage_idx] + i * 128 * 128 + k1 * UMMA_M * 64 + k * UMMA_K;
+                //     for(int row_id = 0; row_id < 128; ++row_id){
+                //         printf("====> kNumMathWarpGroups{%d}, kv row %d\n", i, row_id);
+                //         for(int idx = 0; idx < 16; ++idx){
+                //             if (idx==64) printf("\n");
+                //             printf("%f,",static_cast<float>(*(base_kv_smem + row_id * 64 + idx)));
+                            
+                //         }
+                //         printf("\n");
+                //     }
+                //     auto base_q_smem = smem_q[q_stage_idx] + k1 * UMMA_N * 64 + k * UMMA_K;
+                //     for(int row_id = 0; row_id < 64; ++row_id){
+                //         printf("====> kNumMathWarpGroups{%d}, q row %d\n", i, row_id);
+                //         for(int idx = 0; idx < 16; ++idx){
+                //             if (idx==64) printf("\n");
+                //             printf("%f,",static_cast<float>(*(base_q_smem + row_id * 64 + idx)));
+                //         }
+                //         printf("\n");
+                //     }
+                // }
+                    // #pragma unroll
                     for (uint32_t k = 0; k < 64 / UMMA_K; ++ k) {
                         auto a_desc = mma::sm100::make_umma_desc<cute::UMMA::Major::K, UMMA_M, 64, kHeadDim>(
-                            smem_kv[kv_stage_idx] + i * 128 * 128, k1 * UMMA_M, k * UMMA_K);
+                            smem_kv[kv_stage_idx] + i * UMMA_M * kHeadDim + k1 * UMMA_M * 64 + k * UMMA_K, 0, 0);
                         auto b_desc = mma::sm100::make_umma_desc<cute::UMMA::Major::K, UMMA_M, 64, kHeadDim>(
-                            smem_q[q_stage_idx], k1 * UMMA_N, k * UMMA_K);
-                        ptx::SM100_MMA_F16BF16_SS::fma(a_desc, b_desc, i * UMMA_N, k1 >0 or k > 0, runtime_instr_desc);
+                            smem_q[q_stage_idx] + k1 * UMMA_N * 64 + k * UMMA_K, 0, 0);
+                        ptx::SM100_MMA_F16BF16_SS::fma(a_desc, b_desc, i * UMMA_N, k1 > 0 or k > 0, runtime_instr_desc);
                     }
+                }
+
                 }
                 cutlass::arch::umma_arrive(reinterpret_cast<uint64_t*>(full_umma_barriers[i]));
             }
@@ -411,7 +447,13 @@ void sm100_bf16_paged_mqa_logits(const uint32_t batch_size,
                 for (uint32_t i = 0; i < kNumIters; ++ i) {
                     // Load accumulator from TMEM
                     tmem_load(cute::Int<kNumHeads>{}, tmem_start + i * kNumHeads, accum);
-                    // printf("====> thread %d, result %f\n", math_thread_idx, static_cast<float>(accum[0]));
+                    if (math_thread_idx == 0){
+                        printf("====> thread %d \n", math_thread_idx);
+                        for(auto iter_x = 0; iter_x < kNumHeads; ++iter_x){
+                            printf("result[%d] = %f\n", iter_x, static_cast<float>(accum[iter_x]));
+                        }
+                    }
+                    
 
                     // Accumulate weighted ReLU in parallel
                     auto sum_0 = make_float2(0, 0);
