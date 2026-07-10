@@ -393,13 +393,6 @@ void sm100_bf16_paged_mqa_logits(const uint32_t batch_size,
                 for (uint32_t i = 0; i < kNumIters; ++ i) {
                     // Load accumulator from TMEM
                     tmem_load(cute::Int<kNumHeads>{}, tmem_start + i * kNumHeads, accum);
-                    if (math_thread_idx == 0){
-                        printf("====> thread %d \n", math_thread_idx);
-                        for(auto iter_x = 0; iter_x < kNumHeads; ++iter_x){
-                            printf("result[%d] = %f\n", iter_x, static_cast<float>(accum[iter_x]));
-                        }
-                    }
-                    
 
                     // Accumulate weighted ReLU in parallel
                     auto sum_0 = make_float2(0, 0);
